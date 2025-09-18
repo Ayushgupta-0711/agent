@@ -32,10 +32,7 @@ def detect_file_type(filename: str) -> str:
 # ----------------------------- Data Intelligence Agent -----------------------------
 
 def parse_data_query(query: str, df: pd.DataFrame) -> Tuple[str, dict]:
-    """Heuristic parser returns an intent and parameters.
-    Intents: sum/total, avg/mean, plot/trend, topN, filter
-    Basic extraction for column names using fuzzy text matching (simple substring).
-    """
+    """Heuristic parser returns an intent and parameters."""
     q = query.lower()
     intent = 'unknown'
     params = {}
@@ -58,7 +55,7 @@ def parse_data_query(query: str, df: pd.DataFrame) -> Tuple[str, dict]:
     if m:
         params['n'] = int(m.group(1))
 
-    # find likely metric column (common names)
+    # find likely metric column
     candidates = df.columns.astype(str).tolist()
     metric = None
     for col in candidates:
@@ -66,13 +63,12 @@ def parse_data_query(query: str, df: pd.DataFrame) -> Tuple[str, dict]:
             metric = col
             break
     if metric is None:
-        # fallback: any numeric column
         numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
         metric = numeric_cols[0] if numeric_cols else None
 
     params['metric'] = metric
 
-    # group-by detection: product, region, month, quarter, year
+    # group-by detection
     for g in ['product', 'category', 'region', 'country', 'month', 'quarter', 'year']:
         for col in candidates:
             if g in col.lower():
@@ -101,17 +97,14 @@ def handle_data_query(query: str, df: pd.DataFrame):
             return f"Average {metric}: {meanv}", None
 
     elif intent == 'plot':
-        # if groupby exists, plot group trends
         if metric is None:
             return "Couldn't detect a numeric metric to plot.", None
-        # if there's a time-like column, try to use it
         time_col = None
         for col in df.columns:
             if 'date' in col.lower() or 'month' in col.lower() or 'year' in col.lower():
                 time_col = col
                 break
         if groupby and groupby in df.columns:
-            # aggregate by groupby and maybe time
             if time_col:
                 grouped = df.groupby([time_col, groupby])[metric].sum().reset_index()
                 fig = px.line(grouped, x=time_col, y=metric, color=groupby, title=f"{metric} trend by {groupby}")
@@ -121,7 +114,6 @@ def handle_data_query(query: str, df: pd.DataFrame):
                 fig = px.bar(agg, x=groupby, y=metric, title=f"{metric} by {groupby}")
                 return "", fig
         else:
-            # simple time series if time exists, else histogram
             if time_col:
                 ts = df.groupby(time_col)[metric].sum().reset_index()
                 fig = px.line(ts, x=time_col, y=metric, title=f"{metric} trend over {time_col}")
@@ -139,7 +131,6 @@ def handle_data_query(query: str, df: pd.DataFrame):
             fig = px.bar(agg, x=groupby, y=metric, title=f"Top {n} {groupby} by {metric}")
             return agg, fig
         else:
-            # try to find best categorical column
             cat_cols = df.select_dtypes(include=['object','category']).columns.tolist()
             if cat_cols:
                 gb = df.groupby(cat_cols[0])[metric].sum().reset_index().sort_values(metric, ascending=False).head(n)
@@ -152,8 +143,7 @@ def handle_data_query(query: str, df: pd.DataFrame):
         return f"Number of rows: {len(df)}", None
 
     else:
-        # fallback: try to evaluate simple pandas expressions: "total sales in q2" -> filter quarter
-        return "I'm not sure which operation to perform. Try phrasing: 'Plot revenue trends for the top 5 products' or 'What was the total sales in Q2?'.", None
+        return "I'm not sure which operation to perform.", None
 
 
 # ----------------------------- Research Intelligence Agent -----------------------------
@@ -170,7 +160,6 @@ def extract_text_from_pdf(file_bytes: bytes) -> str:
 
 
 def summarize_text(text: str, max_sentences: int = 5) -> str:
-    # Simple extractive summary using TF-IDF sentence scoring
     sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', text) if len(s.strip())>20]
     if not sentences:
         return "(No extractable text)"
@@ -188,12 +177,10 @@ def extract_keywords(text: str, top_k: int = 10) -> List[str]:
     feature_array = np.array(vec.get_feature_names_out())
     tfidf_sorting = np.argsort(X.toarray()).flatten()[::-1]
     top_n = feature_array[tfidf_sorting][:top_k]
-    # clean keywords
     return [k for k in top_n if len(k)>2]
 
 
 def research_qa(question: str, doc_text: str, top_k: int = 3) -> str:
-    # Split into chunks (sentences) and find best-matching sentences via TF-IDF
     sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', doc_text) if len(s.strip())>20]
     if not sentences:
         return "(No text to answer from)"
@@ -206,7 +193,7 @@ def research_qa(question: str, doc_text: str, top_k: int = 3) -> str:
     if answers:
         return '\n\n'.join(answers)
     else:
-        return "Couldn't find a direct excerpt — try a different question or upload more context."
+        return "Couldn't find a direct excerpt."
 
 
 # ----------------------------- Agent Coordinator -----------------------------
@@ -219,7 +206,6 @@ def route_query(query: str, data_df: pd.DataFrame, research_text: str):
     research_score = sum(1 for kw in research_keywords if kw in q)
 
     results = {}
-    # if data_score > research_score -> data agent
     if data_score >= research_score and data_df is not None:
         results['data'] = handle_data_query(query, data_df)
     if research_score >= data_score and research_text:
@@ -228,7 +214,6 @@ def route_query(query: str, data_df: pd.DataFrame, research_text: str):
             'keywords': extract_keywords(research_text, top_k=10),
             'answer': research_qa(query, research_text)
         }
-    # if neither strong, run both (when available)
     if not results:
         if data_df is not None:
             results['data'] = handle_data_query(query, data_df)
@@ -245,15 +230,14 @@ def route_query(query: str, data_df: pd.DataFrame, research_text: str):
 
 st.title("📊📚 Multi-Agent: Data Intelligence + Research Assistant")
 
-# Initialize session state
 if 'data_dfs' not in st.session_state:
-    st.session_state['data_dfs'] = {}  # name -> dataframe
+    st.session_state['data_dfs'] = {}
 if 'sqlite_conn' not in st.session_state:
     st.session_state['sqlite_conn'] = sqlite3.connect(':memory:')
 if 'research_docs' not in st.session_state:
-    st.session_state['research_docs'] = {}  # name -> text
+    st.session_state['research_docs'] = {}
 
-# Sidebar: upload and manage files
+# Sidebar upload
 st.sidebar.header("Ingest Files")
 uploaded = st.sidebar.file_uploader("Upload CSV/Excel/PDF", accept_multiple_files=True)
 if uploaded:
@@ -288,13 +272,13 @@ with tab1:
         st.subheader("Preview")
         st.dataframe(df.head(200))
 
-        query = st.text_input("Ask a question about this dataset (e.g., 'Plot revenue trends for the top 5 products')")
+        query = st.text_input("Ask a question about this dataset")
         if st.button("Run Data Query") and query:
             output, fig = handle_data_query(query, df)
-            if output and isinstance(output, pd.DataFrame):
+            if isinstance(output, pd.DataFrame) and not output.empty:
                 st.write("**Result table:**")
                 st.dataframe(output)
-            elif output and isinstance(output, str) and output:
+            elif isinstance(output, str) and output:
                 st.write(output)
             if fig is not None:
                 st.plotly_chart(fig, use_container_width=True)
@@ -320,20 +304,19 @@ with tab2:
         st.info("Upload at least one PDF in the sidebar to analyze research documents.")
 
 with tab3:
-    st.header("Unified Chat — route questions to the right agent")
+    st.header("Unified Chat")
     data_df = None
-    # choose which dataset and doc to use as context (optional)
     if st.session_state['data_dfs']:
-        data_choice = st.selectbox("Select dataset to use as context (optional)", options=['(none)']+list(st.session_state['data_dfs'].keys()))
+        data_choice = st.selectbox("Select dataset (optional)", options=['(none)']+list(st.session_state['data_dfs'].keys()))
         if data_choice != '(none)':
             data_df = st.session_state['data_dfs'][data_choice]
     research_text = None
     if st.session_state['research_docs']:
-        doc_choice = st.selectbox("Select document to use as context (optional)", options=['(none)']+list(st.session_state['research_docs'].keys()))
+        doc_choice = st.selectbox("Select document (optional)", options=['(none)']+list(st.session_state['research_docs'].keys()))
         if doc_choice != '(none)':
             research_text = st.session_state['research_docs'][doc_choice]
 
-    user_q = st.text_area("Enter your question (about data, documents, or both)")
+    user_q = st.text_area("Enter your question")
     if st.button("Ask") and user_q:
         with st.spinner('Routing and computing...'):
             res = route_query(user_q, data_df, research_text)
@@ -341,7 +324,7 @@ with tab3:
         if 'data' in res:
             out, fig = res['data']
             st.markdown("### Data Agent Response")
-            if isinstance(out, pd.DataFrame):
+            if isinstance(out, pd.DataFrame) and not out.empty:
                 st.dataframe(out)
             elif isinstance(out, str) and out:
                 st.write(out)
@@ -356,6 +339,6 @@ with tab3:
             st.write("**Answer (excerpts):**")
             st.write(res['research']['answer'])
 
-# Footer / instructions
+# Footer
 st.markdown("---")
-st.write("**Tips:** Use clear phrases: 'Plot', 'Top N', 'Total sales', or 'Summarize the paper' for best results. You can connect an LLM (OpenAI) to improve answers — this app is LLM-optional and primarily uses explainable, local methods.")
+st.write("**Tips:** Use clear phrases like 'Plot', 'Top N', 'Total sales', or 'Summarize the paper'.")
